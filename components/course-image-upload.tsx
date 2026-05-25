@@ -1,96 +1,138 @@
+Untuk mengatasi kerentanan ini, Anda perlu membuat API route sisi server untuk menangani unggahan gambar dan melakukan validasi yang ketat. Kemudian, komponen `CourseImageUpload` akan memanggil API route ini alih-alih mengunggah langsung ke Supabase.
+
+**1. Buat API Route Baru (`/app/api/upload-image/route.ts`):**
+typescript
+// File: /app/api/upload-image/route.ts
+import { NextResponse } from 'next/server';
+import { createRouteHandlerClient } from '@supabase/auth-helpers-nextjs';
+import { cookies } from 'next/headers';
+
+export async function POST(request: Request) {
+  const cookieStore = cookies();
+  const supabase = createRouteHandlerClient({ cookies: () => cookieStore });
+
+  const { data: { user } } = await supabase.auth.getUser();
+
+  if (!user) {
+    return new NextResponse("Unauthorized", { status: 401 });
+  }
+
+  const formData = await request.formData();
+  const file = formData.get('file') as File;
+
+  if (!file) {
+    return new NextResponse("No file uploaded", { status: 400 });
+  }
+
+  // --- PATCH: Server-side validation ---
+  const allowedMimeTypes = ['image/jpeg', 'image/png', 'image/gif', 'image/webp'];
+  const maxFileSize = 5 * 1024 * 1024; // 5MB
+
+  if (!allowedMimeTypes.includes(file.type)) {
+    return new NextResponse("Invalid file type. Only images (JPEG, PNG, GIF, WEBP) are allowed.", { status: 400 });
+  }
+
+  if (file.size > maxFileSize) {
+    return new NextResponse(`File size exceeds the limit of ${maxFileSize / (1024 * 1024)}MB.`, { status: 400 });
+  }
+  // --- AKHIR PATCH ---
+
+  const filePath = `${user.id}/${Date.now()}-${file.name}`; // Contoh path unik
+
+  const { data, error } = await supabase.storage
+    .from('project-images')
+    .upload(filePath, file, {
+      cacheControl: '3600',
+      upsert: false,
+    });
+
+  if (error) {
+    console.error("Supabase upload error:", error);
+    return new NextResponse("Failed to upload image", { status: 500 });
+  }
+
+  // Dapatkan URL publik
+  const { data: publicUrlData } = supabase.storage
+    .from('project-images')
+    .getPublicUrl(filePath);
+
+  return NextResponse.json({ url: publicUrlData.publicUrl });
+}
+
+
+**2. Modifikasi Komponen `CourseImageUpload` (`/components/course-image-upload.tsx`):**
+typescript
+// File: /components/course-image-upload.tsx
 "use client";
 
 import { useState } from "react";
-// Impor objek supabase langsung dari lib kamu
-import { supabase as supabaseClient } from "@/lib/supabaseClient"; 
-import { ImagePlus, Loader2, X } from "lucide-react";
+import { Button } from "@/components/ui/button";
+import { Input } from "@/components/ui/input";
+import { toast } from "sonner";
 
 interface CourseImageUploadProps {
-  onChange: (url: string) => void;
-  value: string;
+  onUploadSuccess: (url: string) => void;
 }
 
-export const CourseImageUpload = ({ onChange, value }: CourseImageUploadProps) => {
+const CourseImageUpload = ({ onUploadSuccess }: CourseImageUploadProps) => {
+  const [file, setFile] = useState<File | null>(null);
   const [isUploading, setIsUploading] = useState(false);
 
-  const onUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
+  const handleFileChange = (event: React.ChangeEvent<HTMLInputElement>) => {
+    if (event.target.files && event.target.files[0]) {
+      setFile(event.target.files[0]);
+    }
+  };
+
+  const handleUpload = async () => {
+    if (!file) {
+      toast.error("Pilih file gambar terlebih dahulu.");
+      return;
+    }
+
+    setIsUploading(true);
     try {
-      const file = e.target.files?.[0];
-      if (!file) return;
+      const formData = new FormData();
+      formData.append('file', file);
 
-      setIsUploading(true);
+      // --- PATCH: Panggil API route untuk upload ---
+      const response = await fetch('/api/upload-image', {
+        method: 'POST',
+        body: formData,
+      });
 
-      // 1. Buat nama file unik agar tidak bentrok di storage
-      const fileExt = file.name.split('.').pop();
-      const fileName = `${Math.random().toString(36).substring(2)}.${fileExt}`;
-      const filePath = `course-thumbnails/${fileName}`;
+      if (!response.ok) {
+        const errorData = await response.json();
+        throw new Error(errorData.message || "Gagal mengunggah gambar.");
+      }
 
-      // 2. Upload ke bucket 'images' 
-      // Gunakan supabaseClient (nama yang kita ubah saat import tadi)
-      const { error: uploadError } = await supabaseClient.storage
-        .from('project-images')
-        .upload(filePath, file);
+      const data = await response.json();
+      onUploadSuccess(data.url);
+      toast.success("Gambar berhasil diunggah!");
+      setFile(null); // Reset file input
+      // --- AKHIR PATCH ---
 
-      if (uploadError) throw uploadError;
-
-      // 3. Ambil Public URL
-      const { data: { publicUrl } } = supabaseClient.storage
-        .from('project-images')
-        .getPublicUrl(filePath);
-
-      // Kirim URL ke form utama
-      onChange(publicUrl);
-    } catch (error) {
-      console.error("Error upload:", error);
-      alert("Gagal upload gambar. Pastikan bucket 'images' sudah dibuat di Supabase.");
+    } catch (error: any) {
+      console.error("Upload error:", error);
+      toast.error(error.message || "Terjadi kesalahan saat mengunggah gambar.");
     } finally {
       setIsUploading(false);
     }
   };
 
   return (
-    <div className="space-y-4 w-full">
-      {value ? (
-        <div className="relative aspect-video w-full rounded-[2rem] overflow-hidden border-4 border-black shadow-[8px_8px_0px_0px_rgba(0,0,0,1)]">
-          <img 
-            src={value} 
-            alt="Thumbnail" 
-            className="object-cover w-full h-full" 
-          />
-          <button 
-            type="button" // Pastikan type="button" agar tidak men-submit form
-            onClick={() => onChange("")}
-            className="absolute top-4 right-4 bg-red-500 text-white p-2 rounded-full hover:bg-red-600 transition shadow-lg"
-          >
-            <X size={16} />
-          </button>
-        </div>
-      ) : (
-        <label className="flex flex-col items-center justify-center aspect-video w-full rounded-[2rem] border-4 border-dashed border-slate-200 bg-slate-50 cursor-pointer hover:border-black hover:bg-slate-100 transition-all group">
-          <div className="flex flex-col items-center justify-center pt-5 pb-6">
-            {isUploading ? (
-              <div className="flex flex-col items-center gap-2">
-                <Loader2 className="h-10 w-10 text-black animate-spin" />
-                <p className="text-[10px] font-black uppercase tracking-widest text-black">Uploading...</p>
-              </div>
-            ) : (
-              <>
-                <ImagePlus className="h-10 w-10 text-slate-400 group-hover:text-black mb-2 transition-colors" />
-                <p className="text-[10px] font-black uppercase tracking-widest text-slate-400 group-hover:text-black transition-colors">
-                  Klik untuk Upload Thumbnail
-                </p>
-              </>
-            )}
-          </div>
-          <input 
-            type="file" 
-            className="hidden" 
-            onChange={onUpload} 
-            disabled={isUploading} 
-            accept="image/*" 
-          />
-        </label>
-      )}
+    <div className="flex flex-col gap-4">
+      <Input
+        type="file"
+        accept="image/*" // Client-side hint, server-side validation is crucial
+        onChange={handleFileChange}
+        disabled={isUploading}
+      />
+      <Button onClick={handleUpload} disabled={!file || isUploading}>
+        {isUploading ? "Mengunggah..." : "Unggah Gambar"}
+      </Button>
     </div>
   );
 };
+
+export default CourseImageUpload;
