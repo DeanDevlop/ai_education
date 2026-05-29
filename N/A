@@ -1,0 +1,53 @@
+// Rekomendasi utama: Upgrade js-cookie ke versi yang telah diperbaiki.
+// Jika upgrade tidak memungkinkan, sanitasi objek atribut sebelum diteruskan ke js-cookie.
+
+// Contoh sanitasi atribut sebelum memanggil Cookies.set
+import Cookies from 'js-cookie';
+
+function sanitizeCookieAttributes(attrs) {
+  const sanitized = {};
+  for (const key in attrs) {
+    // Hanya salin properti milik objek itu sendiri dan bukan properti prototipe
+    // Juga secara eksplisit hindari properti yang dapat menyebabkan prototype pollution
+    if (Object.prototype.hasOwnProperty.call(attrs, key) &&
+        key !== '__proto__' &&
+        key !== 'constructor' &&
+        key !== 'prototype') {
+      sanitized[key] = attrs[key];
+    }
+  }
+  return sanitized;
+}
+
+async function setCookieFromBackendConfig() {
+  const cfg = await fetch('/config').then(r => r.json());
+  const token = 'your_session_token'; // Ambil token dari sumber yang aman
+
+  // Sebelum patch: Cookies.set('session', token, cfg.cookieAttrs);
+  // Setelah patch:
+  const safeCookieAttrs = sanitizeCookieAttributes(cfg.cookieAttrs);
+  Cookies.set('session', token, safeCookieAttrs);
+
+  console.log('Cookie set with sanitized attributes.');
+}
+
+// PENTING: Solusi terbaik adalah mengupgrade js-cookie ke versi yang telah diperbaiki
+// atau menerapkan patch yang disarankan langsung ke kode sumber js-cookie jika Anda mengelola fork.
+// Patch yang disarankan oleh CVE untuk js-cookie (src/assign.mjs):
+/*
+export default function (target) {
+  for (var i = 1; i < arguments.length; i++) {
+    var source = arguments[i]
+    for (var key in source) {
+      if (key === '__proto__' || key === 'constructor' || key === 'prototype') continue
+      Object.defineProperty(target, key, {
+        value: source[key],
+        writable: true,
+        enumerable: true,
+        configurable: true,
+      })
+    }
+  }
+  return target
+}
+*/
